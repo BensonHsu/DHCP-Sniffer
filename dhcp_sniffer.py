@@ -84,11 +84,22 @@ class DHCP():
 	def __init__(self, packet, length):
 		self._payload = packet[42:]
 		self._length = length
+		self._chaddr = ''
 		self._option_55 = ''
 		self._option_53 = ''
 		self._option_12 = ''
 		self._option_50 = ''
 		self._option_54 = ''
+
+	def parse_payload(self):
+		# parse DHCP payload [0:44]
+		#    ciaddr [Client IP Address]      : [12:16]
+		#    yiaddr [Your IP Address]        : [16:20]
+		#    siaddr [Server IP Address]      : [20:24]
+		#    giaddr [Gateway IP Address]     : [24:28]
+		#    chaddr [Client Hardware address]: [28:44]
+		self._chaddr = binascii.hexlify(self._payload[28:34]).decode()
+
 
 	# DHCP options format:
 	#     Magic Cookie + DHCP options + FF(end option)
@@ -134,6 +145,10 @@ class DHCP():
 
 			if index + 4 >  hex_count:
 				break
+
+	@property
+	def chaddr(self):
+		return self._chaddr
 
 	@property
 	def option_55(self):
@@ -229,11 +244,13 @@ if __name__ == '__main__':
 		# get DHCP
 		dhcp = DHCP(packet, udp_length - 8)
 		dhcp.parse_options()
+		dhcp.parse_payload()
 		message_type = dhcp.option_53
 		request_list = dhcp.option_55
 		host_name    = dhcp.option_12
 		request_ip   = dhcp.option_50
 		server_id    = dhcp.option_54
+		chaddr       = dhcp.chaddr
 
 		# get now
 		now = get_time()
@@ -244,7 +261,7 @@ if __name__ == '__main__':
 			print("host name     : {}".format(host_name))
 			print("request ip    : {}".format(request_ip))
 			print("server id     : {}".format(server_id))
-			print("source MAC    : {}".format(convert_hex_str_to_mac(source_mac)))
+			print("source MAC    : {}".format(convert_hex_str_to_mac(chaddr)))
 			print("dest   MAC    : {}".format(convert_hex_str_to_mac(dest_mac)))
 			print("source IP     : {}:{}".format(source_ip, source_port))
 			print("dest   IP     : {}:{}".format(dest_ip, dest_port))
@@ -255,6 +272,6 @@ if __name__ == '__main__':
 			if message_type not in simple_dhcp_type:
 				continue
 
-			print("{:30}{:20}{:20}{:20}{:20}{:20}".format(now, message_type, host_name, convert_hex_str_to_mac(source_mac), request_ip, convert_hex_str_to_int_str(request_list)))
+			print("{:30}{:20}{:20}{:20}{:20}{:20}".format(now, message_type, host_name, convert_hex_str_to_mac(chaddr), request_ip, convert_hex_str_to_int_str(request_list)))
 
 
