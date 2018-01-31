@@ -84,6 +84,7 @@ class DHCP():
 	def __init__(self, packet, length):
 		self._payload = packet[42:]
 		self._length = length
+		self._ciaddr = ''
 		self._chaddr = ''
 		self._option_55 = ''
 		self._option_53 = ''
@@ -98,6 +99,8 @@ class DHCP():
 		#    siaddr [Server IP Address]      : [20:24]
 		#    giaddr [Gateway IP Address]     : [24:28]
 		#    chaddr [Client Hardware address]: [28:44]
+		tmp = struct.unpack('!4s', self._payload[12:16])
+		self._ciaddr = socket.inet_ntoa(tmp[0])
 		self._chaddr = binascii.hexlify(self._payload[28:34]).decode()
 
 
@@ -145,6 +148,10 @@ class DHCP():
 
 			if index + 4 >  hex_count:
 				break
+
+	@property
+	def ciaddr(self):
+		return self._ciaddr
 
 	@property
 	def chaddr(self):
@@ -245,12 +252,14 @@ if __name__ == '__main__':
 		dhcp = DHCP(packet, udp_length - 8)
 		dhcp.parse_options()
 		dhcp.parse_payload()
+		chaddr       = dhcp.chaddr
+		ciaddr       = dhcp.ciaddr
 		message_type = dhcp.option_53
 		request_list = dhcp.option_55
 		host_name    = dhcp.option_12
-		request_ip   = dhcp.option_50
+		# there is no option50 (request IP) when DHCP client rebinds lease. Should use ciaddr as IP address in this condition.
+		request_ip   = dhcp.option_50 if '' != dhcp.option_50 else ciaddr
 		server_id    = dhcp.option_54
-		chaddr       = dhcp.chaddr
 
 		# get now
 		now = get_time()
