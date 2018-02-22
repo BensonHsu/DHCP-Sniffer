@@ -1,11 +1,74 @@
 import sys
 import socket
+import ctypes
 import binascii
 import struct
 import argparse
 import time
 
-class Ethernet():
+class BPF(object):
+	def __init__(self):
+		self.SO_ATTACH_FILTER = 26
+
+		# instruction classes
+		self.BPF_LD  = 0x00
+		self.BPF_JMP = 0x05
+		self.BPF_RET = 0x06
+
+		# ld/ldx fields
+		self.BPF_W   = 0x00    # word(4 byte)
+		self.BPF_H   = 0x08    # helf word(2 byte)
+		self.BPF_B   = 0x10    # byte(1 byte)
+		self.BPF_ABS = 0x20    # absolute address
+
+		# alu/jmp fields
+		self.BPF_JEQ = 0x10
+		self.BPF_K   = 0x00
+
+	def fill_sock_filter(self, code, jt, jf, k):
+		return struct.pack('HBBI', code, jt, jf, k)
+
+	def statement(self, code, k):
+		return self.fill_sock_filter(code, 0, 0, k)
+
+	def jump(self, code, jt, jf, k):
+		return self.fill_sock_filter(code, jt, jf, k)
+
+
+class BPF_DHCP(BPF):
+	def __init__(self):
+		super(BPF_DHCP, self).__init__()
+
+	def set_dhcp_filter(self, sock):
+		command_list = [
+			# filter IPv4
+			self.statement(self.BPF_LD | self.BPF_ABS | self.BPF_H, 12),
+			self.jump(self.BPF_JMP | self.BPF_JEQ | self.BPF_K, 0, 5, 0x0800),
+
+			# filter UDP
+			self.statement(self.BPF_LD | self.BPF_ABS | self.BPF_B, 23),
+			self.jump(self.BPF_JMP | self.BPF_JEQ | self.BPF_K, 0, 3, 0x11),
+
+			# filter destination port 67
+			self.statement(self.BPF_LD | self.BPF_ABS | self.BPF_H, 36),
+			self.jump(self.BPF_JMP | self.BPF_JEQ | self.BPF_K, 0, 1, 67),
+
+			# return
+			self.statement(self.BPF_RET | self.BPF_K, 0xffffffff), # pass
+			self.statement(self.BPF_RET | self.BPF_K, 0x00000000)  # reject
+		]
+		self.print_commands(command_list)
+		commands = b''.join(command_list)
+		buffers = ctypes.create_string_buffer(commands)
+		fprog = struct.pack('HL', len(command_list), ctypes.addressof(buffers))
+		sock.setsockopt(socket.SOL_SOCKET, self.SO_ATTACH_FILTER, fprog)
+
+	def print_commands(self, command_list):
+		print("like <tcpdump -dd ...>")
+		for i in list(map(lambda x: binascii.hexlify(x).decode('ascii'), command_list)):
+			print(i)
+
+class Ethernet(object):
 	# ethertype
 	ETH_P_ALL = 0x0003
 	ETH_P_IP  = 0x0800 
@@ -22,7 +85,7 @@ class Ethernet():
 	def get_ether_type(self):
 		return binascii.hexlify(self._frame_header[12:14]).decode()
 
-class IPv4():
+class IPv4(object):
 	# protocol
 	protocol_UDP = 17
 
@@ -38,7 +101,7 @@ class IPv4():
 	def get_protocol(self):
 		return self._ip_header[6]
 
-class UDP():
+class UDP(object):
 	def __init__(self, packet):
 		self._udp_header = struct.unpack('!HHHH', packet[34:42])
 
@@ -51,7 +114,7 @@ class UDP():
 	def get_length(self):
 		return self._udp_header[2]
 
-class DHCP_Protocol():
+class DHCP_Protocol(object):
 	server_port = 67
 	client_port = 68
 
@@ -80,7 +143,7 @@ class DHCP_Protocol():
 		return message_type.get(value, 'None')
 
 # length: number of bytes
-class DHCP():
+class DHCP(object):
 	def __init__(self, packet, length):
 		self._payload = packet[42:]
 		self._length = length
@@ -205,8 +268,12 @@ if __name__ == '__main__':
 	args = parser.parse_args()
 
 	# bind raw_socket
-	sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(Ethernet.ETH_P_IP))
-	sock.bind((args.interface, Ethernet.ETH_P_IP))
+	sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, 0x0800)
+
+	# use BPF to filter DHCP packet
+	BPF_DHCP().set_dhcp_filter(sock)
+
+	sock.bind((args.interface, 0x0800))
 
 	# print setting
 	print('bind interface: {}'.format(args.interface))
@@ -231,10 +298,6 @@ if __name__ == '__main__':
 		# get IPv4 packet
 		ip_packet = IPv4(packet)
 		protocol = ip_packet.get_protocol()
-
-		if protocol != IPv4.protocol_UDP:
-			continue;
-
 		source_ip = ip_packet.get_source_ip()
 		dest_ip = ip_packet.get_dest_ip()
 
@@ -243,10 +306,6 @@ if __name__ == '__main__':
 		source_port = udp.get_source_port()
 		dest_port = udp.get_dest_port()
 		udp_length = udp.get_length()
-
-		if ((source_port != DHCP_Protocol.client_port and source_port != DHCP_Protocol.server_port) or
-			(dest_port != DHCP_Protocol.client_port and dest_port != DHCP_Protocol.server_port)):
-			continue;
 
 		# get DHCP
 		dhcp = DHCP(packet, udp_length - 8)
